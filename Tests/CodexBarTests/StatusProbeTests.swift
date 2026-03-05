@@ -197,6 +197,32 @@ struct StatusProbeTests {
     }
 
     @Test
+    func parseClaudeStatusWithInlineResetHintsAndUserLabels() throws {
+        let sample = """
+        Current session
+        10% used
+        window resets in 2h 15m
+        Current week (all models)
+        25% used
+        Next reset tomorrow at 11:30pm
+        Current week (Sonnet only)
+        5% used
+        next refresh Mar 7 at 4:00pm
+        Username: claude-user
+        Plan: Claude Team
+        """
+        let snap = try ClaudeStatusProbe.parse(text: sample)
+        #expect(snap.sessionPercentLeft == 90)
+        #expect(snap.weeklyPercentLeft == 75)
+        #expect(snap.opusPercentLeft == 95)
+        #expect(snap.primaryResetDescription == "Resets in 2h 15m")
+        #expect(snap.secondaryResetDescription == "Resets tomorrow at 11:30pm")
+        #expect(snap.opusResetDescription == "Resets Mar 7 at 4:00pm")
+        #expect(snap.accountEmail == "claude-user")
+        #expect(snap.loginMethod == "Team")
+    }
+
+    @Test
     func parseClaudeStatusWithExtraUsageSection() throws {
         let sample = """
         Settings:  Status   Config   Usage  (tab to cycle)

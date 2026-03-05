@@ -28,6 +28,16 @@ struct ClaudeUsageTests {
         return try ClaudeOAuthUsageFetcher._decodeUsageResponseForTesting(Data(json.utf8))
     }
 
+    private static func makeOAuthUsageResponseWithoutResets() throws -> OAuthUsageResponse {
+        let json = """
+        {
+          "five_hour": { "utilization": 7 },
+          "seven_day": { "utilization": 21 }
+        }
+        """
+        return try ClaudeOAuthUsageFetcher._decodeUsageResponseForTesting(Data(json.utf8))
+    }
+
     @Test
     func parsesUsageJSONWithSonnetLimit() {
         let json = """
@@ -497,6 +507,79 @@ struct ClaudeUsageTests {
     }
 
     @Test
+    func parsesUsageJSONWithoutResetStringsFallsBackToRollingWindowText() {
+        let json = """
+        {
+          "ok": true,
+          "session_5h": { "pct_used": 4 },
+          "week_all_models": { "pct_used": 11 }
+        }
+        """
+        let data = Data(json.utf8)
+        let snap = ClaudeUsageFetcher.parse(json: data)
+        #expect(snap?.primary.windowMinutes == 5 * 60)
+        #expect(snap?.secondary?.windowMinutes == 7 * 24 * 60)
+        #expect(snap?.primary.resetDescription == "Rolling 5h window")
+        #expect(snap?.secondary?.resetDescription == "Rolling 7d window")
+    }
+
+    @Test
+    func oauthMapping_usesRollingWindowDescriptionsWhenResetMissing() throws {
+        let json = """
+        {
+          "five_hour": { "utilization": 9 },
+          "seven_day": { "utilization": 4 }
+        }
+        """
+        let snap = try ClaudeUsageFetcher._mapOAuthUsageForTesting(
+            Data(json.utf8),
+            rateLimitTier: "default_claude_max_20x")
+        #expect(snap.primary.windowMinutes == 5 * 60)
+        #expect(snap.secondary?.windowMinutes == 7 * 24 * 60)
+        #expect(snap.primary.resetDescription == "Rolling 5h window")
+        #expect(snap.secondary?.resetDescription == "Rolling 7d window")
+        #expect(snap.loginMethod == "Claude Max")
+    }
+
+    @Test
+    func oauthLoad_enrichesAccountFromKeychainFallback() async throws {
+        let usageResponse = try Self.makeOAuthUsageResponseWithoutResets()
+        let fetcher = ClaudeUsageFetcher(
+            browserDetection: BrowserDetection(cacheTTL: 0),
+            environment: [:],
+            dataSource: .oauth,
+            oauthKeychainPromptCooldownEnabled: true)
+
+        let fetchOverride: (@Sendable (String) async throws -> OAuthUsageResponse)? = { _ in usageResponse }
+        let loadCredsOverride: (@Sendable (
+            [String: String],
+            Bool,
+            Bool) async throws -> ClaudeOAuthCredentials)? = { _, _, _ in
+            ClaudeOAuthCredentials(
+                accessToken: "fresh-token",
+                refreshToken: "refresh-token",
+                expiresAt: Date(timeIntervalSinceNow: 3600),
+                scopes: ["user:profile"],
+                rateLimitTier: "claude_team")
+        }
+
+        let snapshot = try await ClaudeOAuthCredentialsStore.withSecurityCLIReadAccountOverrideForTesting(
+            "claude-user",
+            operation: {
+                try await ProviderInteractionContext.$current.withValue(.background) {
+                    try await ClaudeUsageFetcher.$fetchOAuthUsageOverride.withValue(fetchOverride) {
+                        try await ClaudeUsageFetcher.$loadOAuthCredentialsOverride.withValue(loadCredsOverride) {
+                            try await fetcher.loadLatestUsage(model: "sonnet")
+                        }
+                    }
+                }
+            })
+
+        #expect(snapshot.accountEmail == "claude-user")
+        #expect(snapshot.loginMethod == "Claude Team")
+    }
+
+    @Test
     func parsesLegacyOpusAndAccount() {
         let json = """
         {
@@ -511,7 +594,7 @@ struct ClaudeUsageTests {
         let data = Data(json.utf8)
         let snap = ClaudeUsageFetcher.parse(json: data)
         #expect(snap?.opus?.usedPercent == 0)
-        #expect(snap?.opus?.resetDescription?.isEmpty == true)
+        #expect(snap?.opus?.resetDescription == "Rolling 7d window")
         #expect(snap?.accountEmail == "steipete@gmail.com")
         #expect(snap?.accountOrganization == nil)
     }

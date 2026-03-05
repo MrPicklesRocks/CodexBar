@@ -199,21 +199,24 @@ public struct ClaudeUsageFetcher: ClaudeUsageFetching, Sendable {
             return nil
         }
 
-        func makeWindow(_ dict: [String: Any]?) -> RateWindow? {
+        func makeWindow(_ dict: [String: Any]?, windowMinutes: Int?) -> RateWindow? {
             guard let dict else { return nil }
             let pct = (dict["pct_used"] as? NSNumber)?.doubleValue ?? 0
-            let resetText = dict["resets"] as? String
+            let resetText = (dict["resets"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let resetDescription = resetText?.isEmpty == false
+                ? resetText
+                : Self.rollingWindowResetDescription(windowMinutes: windowMinutes)
             return RateWindow(
                 usedPercent: pct,
-                windowMinutes: nil,
+                windowMinutes: windowMinutes,
                 resetsAt: Self.parseReset(text: resetText),
-                resetDescription: resetText)
+                resetDescription: resetDescription)
         }
 
-        guard let session = makeWindow(firstWindowDict(["session_5h"])) else {
+        guard let session = makeWindow(firstWindowDict(["session_5h"]), windowMinutes: 5 * 60) else {
             throw ClaudeUsageError.parseFailed("missing session data")
         }
-        let weekAll = makeWindow(firstWindowDict(["week_all_models", "week_all"]))
+        let weekAll = makeWindow(firstWindowDict(["week_all_models", "week_all"]), windowMinutes: 7 * 24 * 60)
 
         let rawEmail = (obj["account_email"] as? String)?.trimmingCharacters(
             in: .whitespacesAndNewlines)
@@ -234,9 +237,11 @@ public struct ClaudeUsageFetcher: ClaudeUsageFetching, Sendable {
             let resets = opus["resets"] as? String
             return RateWindow(
                 usedPercent: pct,
-                windowMinutes: nil,
+                windowMinutes: 7 * 24 * 60,
                 resetsAt: Self.parseReset(text: resets),
-                resetDescription: resets)
+                resetDescription: resets?.isEmpty == false
+                    ? resets
+                    : Self.rollingWindowResetDescription(windowMinutes: 7 * 24 * 60))
         }()
         return ClaudeUsageSnapshot(
             primary: session,
@@ -655,8 +660,12 @@ public struct ClaudeUsageFetcher: ClaudeUsageFetching, Sendable {
             guard let window,
                   let utilization = window.utilization
             else { return nil }
-            let resetDate = ClaudeOAuthUsageFetcher.parseISO8601Date(window.resetsAt)
+            let rawReset = window.resetsAt?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let resetDate = ClaudeOAuthUsageFetcher.parseISO8601Date(rawReset)
+                ?? ClaudeStatusProbe.parseResetDate(from: rawReset)
             let resetDescription = resetDate.map(Self.formatResetDate)
+                ?? ((rawReset?.isEmpty ?? true) ? nil : rawReset)
+                ?? Self.rollingWindowResetDescription(windowMinutes: windowMinutes)
             return RateWindow(
                 usedPercent: utilization,
                 windowMinutes: windowMinutes,
@@ -724,6 +733,17 @@ public struct ClaudeUsageFetcher: ClaudeUsageFetching, Sendable {
         if tier.contains("team") { return "Claude Team" }
         if tier.contains("enterprise") { return "Claude Enterprise" }
         return nil
+    }
+
+    private static func rollingWindowResetDescription(windowMinutes: Int?) -> String? {
+        guard let windowMinutes, windowMinutes > 0 else { return nil }
+        if windowMinutes % (24 * 60) == 0 {
+            return "Rolling \(windowMinutes / (24 * 60))d window"
+        }
+        if windowMinutes % 60 == 0 {
+            return "Rolling \(windowMinutes / 60)h window"
+        }
+        return "Rolling \(windowMinutes)m window"
     }
 
     // MARK: - Web API path (uses browser cookies)
@@ -799,21 +819,33 @@ public struct ClaudeUsageFetcher: ClaudeUsageFetching, Sendable {
             throw ClaudeUsageError.parseFailed("missing session data")
         }
 
-        func makeWindow(pctLeft: Int?, reset: String?) -> RateWindow? {
+        func makeWindow(pctLeft: Int?, reset: String?, windowMinutes: Int?) -> RateWindow? {
             guard let left = pctLeft else { return nil }
             let used = max(0, min(100, 100 - Double(left)))
             let resetClean = reset?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let resetDate = ClaudeStatusProbe.parseResetDate(from: resetClean)
+            let resetDescription = resetClean?.isEmpty == false
+                ? resetClean
+                : Self.rollingWindowResetDescription(windowMinutes: windowMinutes)
             return RateWindow(
                 usedPercent: used,
-                windowMinutes: nil,
-                resetsAt: ClaudeStatusProbe.parseResetDate(from: resetClean),
-                resetDescription: resetClean)
+                windowMinutes: windowMinutes,
+                resetsAt: resetDate,
+                resetDescription: resetDescription)
         }
 
-        let primary = makeWindow(pctLeft: sessionPctLeft, reset: snap.primaryResetDescription)!
+        let primary = makeWindow(
+            pctLeft: sessionPctLeft,
+            reset: snap.primaryResetDescription,
+            windowMinutes: 5 * 60)!
         let weekly = makeWindow(
-            pctLeft: snap.weeklyPercentLeft, reset: snap.secondaryResetDescription)
-        let opus = makeWindow(pctLeft: snap.opusPercentLeft, reset: snap.opusResetDescription)
+            pctLeft: snap.weeklyPercentLeft,
+            reset: snap.secondaryResetDescription,
+            windowMinutes: 7 * 24 * 60)
+        let opus = makeWindow(
+            pctLeft: snap.opusPercentLeft,
+            reset: snap.opusResetDescription,
+            windowMinutes: 7 * 24 * 60)
 
         return ClaudeUsageSnapshot(
             primary: primary,
@@ -861,6 +893,58 @@ public struct ClaudeUsageFetcher: ClaudeUsageFetching, Sendable {
             Self.log.debug("Claude web extras fetch failed: \(error.localizedDescription)")
         }
         return snapshot
+    }
+
+    private func enrichIdentityIfNeeded(_ snapshot: ClaudeUsageSnapshot) -> ClaudeUsageSnapshot {
+        let currentAccount = snapshot.accountEmail?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let currentLogin = snapshot.loginMethod?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedAccount = (currentAccount?.isEmpty == false)
+            ? currentAccount
+            : self.fallbackClaudeAccountIdentifier()
+        let resolvedLogin = (currentLogin?.isEmpty == false)
+            ? currentLogin
+            : self.fallbackClaudeLoginMethod()
+
+        guard resolvedAccount != currentAccount || resolvedLogin != currentLogin else {
+            return snapshot
+        }
+
+        return ClaudeUsageSnapshot(
+            primary: snapshot.primary,
+            secondary: snapshot.secondary,
+            opus: snapshot.opus,
+            providerCost: snapshot.providerCost,
+            updatedAt: snapshot.updatedAt,
+            accountEmail: resolvedAccount,
+            accountOrganization: snapshot.accountOrganization,
+            loginMethod: resolvedLogin,
+            rawText: snapshot.rawText)
+    }
+
+    private func fallbackClaudeAccountIdentifier() -> String? {
+        let direct = ClaudeOAuthCredentialsStore
+            .preferredClaudeKeychainAccountForSecurityCLIRead()?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let direct, !direct.isEmpty { return direct }
+
+        let forced = ProviderInteractionContext.$current.withValue(.userInitiated) {
+            ClaudeOAuthCredentialsStore.preferredClaudeKeychainAccountForSecurityCLIRead(
+                interaction: .userInitiated)
+        }?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let forced, !forced.isEmpty { return forced }
+        return nil
+    }
+
+    private func fallbackClaudeLoginMethod() -> String? {
+        guard let credentials = try? ClaudeOAuthCredentialsStore.load(
+            environment: self.environment,
+            allowKeychainPrompt: false,
+            respectKeychainPromptCooldown: true)
+        else {
+            return nil
+        }
+        return Self.inferPlan(rateLimitTier: credentials.rateLimitTier)
     }
 
     // MARK: - Process helpers
@@ -951,18 +1035,19 @@ extension ClaudeUsageFetcher {
                 logAutoDecision(selected: "oauth")
                 var snap = try await self.loadViaOAuth(allowDelegatedRetry: true)
                 snap = await self.applyWebExtrasIfNeeded(to: snap)
-                return snap
+                return self.enrichIdentityIfNeeded(snap)
             }
             if hasWebSession {
                 logAutoDecision(selected: "web")
-                return try await self.loadViaWebAPI()
+                let snap = try await self.loadViaWebAPI()
+                return self.enrichIdentityIfNeeded(snap)
             }
             if hasCLI {
                 do {
                     logAutoDecision(selected: "cli")
                     var snap = try await self.loadViaPTY(model: model, timeout: 10)
                     snap = await self.applyWebExtrasIfNeeded(to: snap)
-                    return snap
+                    return self.enrichIdentityIfNeeded(snap)
                 } catch {
                     Self.log.debug(
                         "Claude auto source CLI path failed; falling back to OAuth",
@@ -974,22 +1059,23 @@ extension ClaudeUsageFetcher {
             logAutoDecision(selected: "oauthFallback")
             var snap = try await self.loadViaOAuth(allowDelegatedRetry: true)
             snap = await self.applyWebExtrasIfNeeded(to: snap)
-            return snap
+            return self.enrichIdentityIfNeeded(snap)
         case .oauth:
             var snap = try await self.loadViaOAuth(allowDelegatedRetry: true)
             snap = await self.applyWebExtrasIfNeeded(to: snap)
-            return snap
+            return self.enrichIdentityIfNeeded(snap)
         case .web:
-            return try await self.loadViaWebAPI()
+            let snap = try await self.loadViaWebAPI()
+            return self.enrichIdentityIfNeeded(snap)
         case .cli:
             do {
                 var snap = try await self.loadViaPTY(model: model, timeout: 10)
                 snap = await self.applyWebExtrasIfNeeded(to: snap)
-                return snap
+                return self.enrichIdentityIfNeeded(snap)
             } catch {
                 var snap = try await self.loadViaPTY(model: model, timeout: 24)
                 snap = await self.applyWebExtrasIfNeeded(to: snap)
-                return snap
+                return self.enrichIdentityIfNeeded(snap)
             }
         }
     }

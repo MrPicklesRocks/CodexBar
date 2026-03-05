@@ -324,10 +324,16 @@ public struct ClaudeStatusProbe: Sendable {
         let emailPatterns = [
             #"(?i)Account:\s+([^\s@]+@[^\s@]+)"#,
             #"(?i)Email:\s+([^\s@]+@[^\s@]+)"#,
+            #"(?i)User(?:name)?:\s+([^\s@]+@[^\s@]+)"#,
+            #"(?i)Signed\s+in\s+as:?\s+([^\s@]+@[^\s@]+)"#,
+            #"(?i)Logged\s+in\s+as:?\s+([^\s@]+@[^\s@]+)"#,
         ]
         let looseEmailPatterns = [
             #"(?i)Account:\s+(\S+)"#,
             #"(?i)Email:\s+(\S+)"#,
+            #"(?i)User(?:name)?:\s+(\S+)"#,
+            #"(?i)Signed\s+in\s+as:?\s+(\S+)"#,
+            #"(?i)Logged\s+in\s+as:?\s+(\S+)"#,
         ]
         let email = emailPatterns
             .compactMap { self.extractFirst(pattern: $0, text: usageText) }
@@ -464,9 +470,28 @@ public struct ClaudeStatusProbe: Sendable {
     }
 
     private static func resetFromLine(_ line: String) -> String? {
-        guard let range = line.range(of: "Resets", options: [.caseInsensitive]) else { return nil }
-        let raw = String(line[range.lowerBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
-        return self.cleanResetLine(raw)
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if let range = trimmed.range(of: "Resets", options: [.caseInsensitive]) {
+            let raw = String(trimmed[range.lowerBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            return self.cleanResetLine(raw)
+        }
+
+        let normalized = trimmed.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        let inlinePatterns = [
+            #"((?i)\bin\s+\d+\s*(?:d|day|days|h|hr|hrs|hour|hours|m|min|mins|minute|minutes)(?:\s+\d+\s*(?:h|hr|hrs|hour|hours|m|min|mins|minute|minutes))*\b)"#,
+            #"((?i)\b(?:today|tomorrow)\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)\b)"#,
+            #"((?i)\b[A-Z][a-z]{2,8}\s+\d{1,2}(?:,\s*\d{4})?(?:\s+at)?\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)\b)"#,
+            #"((?i)\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b)"#,
+        ]
+
+        for pattern in inlinePatterns {
+            if let match = self.extractFirst(pattern: pattern, text: normalized) {
+                return self.cleanResetLine("Resets \(match)")
+            }
+        }
+        return nil
     }
 
     private static func normalizedForLabelSearch(_ text: String) -> String {
@@ -493,6 +518,10 @@ public struct ClaudeStatusProbe: Sendable {
     private static func cleanResetLine(_ raw: String) -> String {
         // TTY capture sometimes appends a stray ")" at line ends; trim it to keep snapshots stable.
         var cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        cleaned = cleaned.replacingOccurrences(
+            of: #"(?i)^resets?"#,
+            with: "Resets",
+            options: .regularExpression)
         cleaned = cleaned.trimmingCharacters(in: CharacterSet(charactersIn: " )"))
         let openCount = cleaned.count(where: { $0 == "(" })
         let closeCount = cleaned.count(where: { $0 == ")" })
@@ -599,8 +628,18 @@ public struct ClaudeStatusProbe: Sendable {
     /// Extract login/plan string from CLI output.
     private static func extractLoginMethod(text: String) -> String? {
         guard !text.isEmpty else { return nil }
-        if let explicit = self.extractFirst(pattern: #"(?i)login\s+method:\s*(.+)"#, text: text) {
-            return self.cleanPlan(explicit)
+        let explicitPatterns = [
+            #"(?i)login\s+method:\s*(.+)"#,
+            #"(?i)\bplan:\s*(.+)"#,
+            #"(?i)\bsubscription:\s*(.+)"#,
+            #"(?i)\btier:\s*(.+)"#,
+            #"(?i)\baccount\s+type:\s*(.+)"#,
+        ]
+        for pattern in explicitPatterns {
+            if let explicit = self.extractFirst(pattern: pattern, text: text) {
+                let cleaned = self.cleanPlan(explicit)
+                if !cleaned.isEmpty { return cleaned }
+            }
         }
         // Capture any "Claude <...>" phrase (e.g., Max/Pro/Ultra/Team) to avoid future plan-name churn.
         // Strip any leading ANSI that may have survived (rare) before matching.
@@ -622,6 +661,18 @@ public struct ClaudeStatusProbe: Sendable {
             return !lower.contains("code v") && !lower.contains("code version") && !lower.contains("code")
         }) {
             return plan
+        }
+
+        let keywordPlans: [(pattern: String, value: String)] = [
+            (#"((?i)\b(?:claude\s+)?max\b)"#, "Claude Max"),
+            (#"((?i)\b(?:claude\s+)?pro\b)"#, "Claude Pro"),
+            (#"((?i)\b(?:claude\s+)?team\b)"#, "Claude Team"),
+            (#"((?i)\b(?:claude\s+)?enterprise\b)"#, "Claude Enterprise"),
+            (#"((?i)\b(?:claude\s+)?ultra\b)"#, "Claude Ultra"),
+            (#"((?i)\b(?:claude\s+)?free\b)"#, "Claude Free"),
+        ]
+        for entry in keywordPlans where self.extractFirst(pattern: entry.pattern, text: text) != nil {
+            return self.cleanPlan(entry.value)
         }
         return nil
     }
