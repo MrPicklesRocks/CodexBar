@@ -366,6 +366,29 @@ struct StatusProbeTests {
         #expect(snap.sessionPercentLeft == 94)
         #expect(snap.weeklyPercentLeft == 96)
         #expect(snap.opusPercentLeft == 99)
+        #expect(snap.primaryResetDescription?.contains("4:29am") == true)
+        #expect(snap.secondaryResetDescription?.contains("Feb12at1:29pm") == true)
+        #expect(snap.opusResetDescription?.contains("Feb12at1:29pm") == true)
+    }
+
+    @Test
+    func parseClaudeStatus_resetFallbackUsesOrderedResetsWhenLabelsMutate() throws {
+        let sample = """
+        Settings:StatusConfigUsage
+        Curretsession
+        6%used
+        Resets 4:29am (Asia/Calcutta)
+        Currentweek(allmodels)
+        4%used
+        Resets Feb 12 at 1:29pm (Asia/Calcutta)
+        Currentweek(Sonnetonly)
+        1%used
+        Resets Feb 13 at 2:00pm (Asia/Calcutta)
+        """
+        let snap = try ClaudeStatusProbe.parse(text: sample)
+        #expect(snap.primaryResetDescription == "Resets 4:29am (Asia/Calcutta)")
+        #expect(snap.secondaryResetDescription == "Resets Feb 12 at 1:29pm (Asia/Calcutta)")
+        #expect(snap.opusResetDescription == "Resets Feb 13 at 2:00pm (Asia/Calcutta)")
     }
 
     @Test
@@ -525,6 +548,37 @@ struct StatusProbeTests {
             minute: 0,
             second: 0))
         #expect(parsedDateTime == dateExpected)
+    }
+
+    @Test
+    func parsesClaudeResetRelativeDuration() throws {
+        let now = Date(timeIntervalSince1970: 1_733_690_000)
+        let parsed = ClaudeStatusProbe.parseResetDate(from: "Resets in 2h 15m", now: now)
+        let expected = now.addingTimeInterval((2 * 60 + 15) * 60)
+        #expect(parsed == expected)
+    }
+
+    @Test
+    func parsesClaudeResetTomorrowAtTime() throws {
+        let now = Date(timeIntervalSince1970: 1_733_690_000)
+        let parsed = ClaudeStatusProbe.parseResetDate(from: "Resets tomorrow at 11:30pm (UTC)", now: now)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(identifier: "UTC"))
+        let tomorrow = try #require(calendar.date(byAdding: .day, value: 1, to: now))
+        let expected = try #require(calendar.date(bySettingHour: 23, minute: 30, second: 0, of: tomorrow))
+        #expect(parsed == expected)
+    }
+
+    @Test
+    func parsesClaudeResetDateWithYear() throws {
+        let now = Date(timeIntervalSince1970: 1_733_690_000)
+        let parsed = ClaudeStatusProbe.parseResetDate(
+            from: "Resets Jan 2, 2026, 10:59pm (Europe/Helsinki)",
+            now: now)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(identifier: "Europe/Helsinki"))
+        let expected = calendar.date(from: DateComponents(year: 2026, month: 1, day: 2, hour: 22, minute: 59))
+        #expect(parsed == expected)
     }
 
     @Test

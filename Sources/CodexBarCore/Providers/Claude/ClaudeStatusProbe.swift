@@ -109,9 +109,13 @@ public struct ClaudeStatusProbe: Sendable {
         }
     }
 
+    private static let sessionLabelNeedle = Data("current session".utf8)
     private static let weeklyLabelNeedle = Data("current week".utf8)
+    private static let weeklyFullLabelNeedle = Data("current week (all models".utf8)
     private static let opusLabelNeedle = Data("opus".utf8)
     private static let sonnetLabelNeedle = Data("sonnet".utf8)
+    private static let opusFullLabelNeedle = Data("current week (opus".utf8)
+    private static let sonnetFullLabelNeedle = Data("current week (sonnet".utf8)
 
     public static func parse(text: String, statusText: String? = nil) throws -> ClaudeStatusSnapshot {
         let clean = TextParsing.stripANSICodes(text)
@@ -155,6 +159,11 @@ public struct ClaudeStatusProbe: Sendable {
             || compactContext.contains("currentweek")
         let hasOpusLabel = labelContext.contains(Self.opusLabelNeedle) || labelContext.contains(Self.sonnetLabelNeedle)
 
+        let hasExactSessionLabel = labelContext.contains(Self.sessionLabelNeedle)
+        let hasExactWeeklyLabel = labelContext.contains(Self.weeklyFullLabelNeedle)
+        let hasExactOpusLabel = labelContext.contains(Self.opusFullLabelNeedle) || labelContext.contains(
+            Self.sonnetFullLabelNeedle)
+
         if sessionPct == nil || (hasWeeklyLabel && weeklyPct == nil) || (hasOpusLabel && opusPct == nil) {
             let ordered = self.allPercents(usagePanelText)
             if sessionPct == nil, ordered.indices.contains(0) { sessionPct = ordered[0] }
@@ -179,11 +188,11 @@ public struct ClaudeStatusProbe: Sendable {
             throw ClaudeStatusProbeError.parseFailed("Missing Current session.")
         }
 
-        let sessionReset = self.extractReset(labelSubstring: "Current session", context: labelContext)
-        let weeklyReset = hasWeeklyLabel
+        var sessionReset = self.extractReset(labelSubstring: "Current session", context: labelContext)
+        var weeklyReset = hasWeeklyLabel
             ? self.extractReset(labelSubstring: "Current week (all models)", context: labelContext)
             : nil
-        let opusReset = hasOpusLabel
+        var opusReset = hasOpusLabel
             ? self.extractReset(
                 labelSubstrings: [
                     "Current week (Opus)",
@@ -192,6 +201,21 @@ public struct ClaudeStatusProbe: Sendable {
                 ],
                 context: labelContext)
             : nil
+
+        // Fallback mapping by on-screen order when label matching fails due compact/mutated headers.
+        if sessionReset == nil || (hasWeeklyLabel && weeklyReset == nil) || (hasOpusLabel && opusReset == nil) {
+            let orderedResets = self.allResets(usagePanelText)
+            if !hasExactSessionLabel, sessionReset == nil, orderedResets.indices.contains(0) {
+                sessionReset = orderedResets[0]
+            }
+            if hasWeeklyLabel, !hasExactWeeklyLabel, weeklyReset == nil, orderedResets.indices.contains(1) {
+                weeklyReset = orderedResets[1]
+            }
+            let opusIndex = hasWeeklyLabel ? 2 : 1
+            if hasOpusLabel, !hasExactOpusLabel, opusReset == nil, orderedResets.indices.contains(opusIndex) {
+                opusReset = orderedResets[opusIndex]
+            }
+        }
 
         return ClaudeStatusSnapshot(
             sessionPercentLeft: sessionPct,
@@ -541,6 +565,31 @@ public struct ClaudeStatusProbe: Sendable {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = formatter.timeZone
 
+        if let relative = self.parseRelativeDuration(raw) {
+            return now.addingTimeInterval(relative)
+        }
+
+        if let relativeDay = self.parseRelativeDayTime(
+            raw: raw,
+            formatter: formatter,
+            calendar: calendar,
+            now: now)
+        {
+            return relativeDay
+        }
+
+        if let date = self.parseDate(raw, formats: Self.resetDateTimeWithYearWithMinutes, formatter: formatter) {
+            var comps = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+            comps.second = 0
+            return calendar.date(from: comps)
+        }
+        if let date = self.parseDate(raw, formats: Self.resetDateTimeWithYearHourOnly, formatter: formatter) {
+            var comps = calendar.dateComponents([.year, .month, .day, .hour], from: date)
+            comps.minute = 0
+            comps.second = 0
+            return calendar.date(from: comps)
+        }
+
         if let date = self.parseDate(raw, formats: Self.resetDateTimeWithMinutes, formatter: formatter) {
             var comps = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
             comps.second = 0
@@ -587,11 +636,35 @@ public struct ClaudeStatusProbe: Sendable {
         "MMM d HH:mm",
     ]
 
+    private static let resetDateTimeWithYearWithMinutes = [
+        "MMM d, yyyy, h:mma",
+        "MMM d, yyyy, h:mm a",
+        "MMM d, yyyy h:mma",
+        "MMM d, yyyy h:mm a",
+        "MMM d yyyy, h:mma",
+        "MMM d yyyy, h:mm a",
+        "MMM d yyyy h:mma",
+        "MMM d yyyy h:mm a",
+        "MMM d, yyyy, HH:mm",
+        "MMM d, yyyy HH:mm",
+    ]
+
     private static let resetDateTimeHourOnly = [
         "MMM d, ha",
         "MMM d, h a",
         "MMM d ha",
         "MMM d h a",
+    ]
+
+    private static let resetDateTimeWithYearHourOnly = [
+        "MMM d, yyyy, ha",
+        "MMM d, yyyy, h a",
+        "MMM d, yyyy ha",
+        "MMM d, yyyy h a",
+        "MMM d yyyy, ha",
+        "MMM d yyyy, h a",
+        "MMM d yyyy ha",
+        "MMM d yyyy h a",
     ]
 
     private static func normalizeResetInput(_ text: String?) -> (String, TimeZone?)? {
@@ -623,6 +696,88 @@ public struct ClaudeStatusProbe: Sendable {
             if let date = formatter.date(from: text) { return date }
         }
         return nil
+    }
+
+    private static func parseRelativeDuration(_ raw: String) -> TimeInterval? {
+        let lower = raw.lowercased()
+        guard lower.hasPrefix("in ") else { return nil }
+        guard let regex = try? NSRegularExpression(
+            pattern: #"(?i)\b(\d+)\s*(d|day|days|h|hr|hrs|hour|hours|m|min|mins|minute|minutes)\b"#)
+        else {
+            return nil
+        }
+        let range = NSRange(raw.startIndex..<raw.endIndex, in: raw)
+        let matches = regex.matches(in: raw, options: [], range: range)
+        guard !matches.isEmpty else { return nil }
+        var totalMinutes = 0
+        for match in matches where match.numberOfRanges >= 3 {
+            guard let valueRange = Range(match.range(at: 1), in: raw),
+                  let unitRange = Range(match.range(at: 2), in: raw),
+                  let value = Int(raw[valueRange])
+            else {
+                continue
+            }
+            let unit = raw[unitRange].lowercased()
+            if unit.hasPrefix("d") {
+                totalMinutes += value * 24 * 60
+            } else if unit.hasPrefix("h") {
+                totalMinutes += value * 60
+            } else {
+                totalMinutes += value
+            }
+        }
+        guard totalMinutes > 0 else { return nil }
+        return TimeInterval(totalMinutes * 60)
+    }
+
+    private static func parseRelativeDayTime(
+        raw: String,
+        formatter: DateFormatter,
+        calendar: Calendar,
+        now: Date) -> Date?
+    {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"(?i)\b(today|tomorrow)\b\s*(?:at\s*)?(.+)$"#)
+        else {
+            return nil
+        }
+        let nsRange = NSRange(raw.startIndex..<raw.endIndex, in: raw)
+        guard let match = regex.firstMatch(in: raw, options: [], range: nsRange),
+              match.numberOfRanges >= 3,
+              let dayRange = Range(match.range(at: 1), in: raw),
+              let timeRange = Range(match.range(at: 2), in: raw)
+        else {
+            return nil
+        }
+        let dayToken = raw[dayRange].lowercased()
+        let timeRaw = String(raw[timeRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanTime = timeRaw.replacingOccurrences(of: #"(?i)^at\s+"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanTime.isEmpty else { return nil }
+
+        let baseDate: Date = if dayToken == "tomorrow" {
+            (calendar.date(byAdding: .day, value: 1, to: now) ?? now)
+        } else {
+            now
+        }
+
+        let timeFormats = Self.resetTimeWithMinutes + Self.resetTimeHourOnly
+        guard let time = self.parseDate(cleanTime, formats: timeFormats, formatter: formatter) else {
+            return nil
+        }
+        let components = calendar.dateComponents([.hour, .minute], from: time)
+        guard let anchored = calendar.date(
+            bySettingHour: components.hour ?? 0,
+            minute: components.minute ?? 0,
+            second: 0,
+            of: baseDate)
+        else {
+            return nil
+        }
+        if dayToken == "today", anchored < now {
+            return calendar.date(byAdding: .day, value: 1, to: anchored)
+        }
+        return anchored
     }
 
     /// Extract login/plan string from CLI output.
