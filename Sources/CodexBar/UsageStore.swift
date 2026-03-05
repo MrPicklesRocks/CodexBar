@@ -246,7 +246,12 @@ final class UsageStore {
         }
         LoginShellPathCache.shared.captureOnce { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.schedulePathDebugInfoRefresh()
+                guard let self else { return }
+                if !SettingsStore.isRunningTests {
+                    self.detectVersions()
+                    self.settings.rerunProviderDetection()
+                }
+                self.schedulePathDebugInfoRefresh()
             }
         }
         Task { await self.refresh() }
@@ -1571,11 +1576,13 @@ extension UsageStore {
         self.lastTokenFetchAt.removeAll()
         self.tokenFailureGates[.codex]?.reset()
         self.tokenFailureGates[.claude]?.reset()
+        self.tokenFailureGates[.gemini]?.reset()
+        self.tokenFailureGates[.vertexai]?.reset()
         return nil
     }
 
     private func refreshTokenUsage(_ provider: UsageProvider, force: Bool) async {
-        guard provider == .codex || provider == .claude || provider == .vertexai else {
+        guard provider == .codex || provider == .claude || provider == .gemini || provider == .vertexai else {
             self.tokenSnapshots.removeValue(forKey: provider)
             self.tokenErrors[provider] = nil
             self.tokenFailureGates[provider]?.reset()

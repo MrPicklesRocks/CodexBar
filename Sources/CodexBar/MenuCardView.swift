@@ -50,6 +50,7 @@ struct UsageMenuCardView: View {
         struct TokenUsageSection: Sendable {
             let sessionLine: String
             let monthLine: String
+            let resetLines: [String]
             let hintLine: String?
             let errorLine: String?
             let errorCopyText: String?
@@ -157,6 +158,11 @@ struct UsageMenuCardView: View {
                                 .font(.footnote)
                             Text(tokenUsage.monthLine)
                                 .font(.footnote)
+                            ForEach(Array(tokenUsage.resetLines.enumerated()), id: \.offset) { _, line in
+                                Text(line)
+                                    .font(.footnote)
+                                    .foregroundStyle(MenuHighlightStyle.secondary(self.isHighlighted))
+                            }
                             if let hint = tokenUsage.hintLine, !hint.isEmpty {
                                 Text(hint)
                                     .font(.footnote)
@@ -562,6 +568,11 @@ struct UsageMenuCardCostSectionView: View {
                                 .font(.caption)
                             Text(tokenUsage.monthLine)
                                 .font(.caption)
+                            ForEach(Array(tokenUsage.resetLines.enumerated()), id: \.offset) { _, line in
+                                Text(line)
+                                    .font(.caption)
+                                    .foregroundStyle(MenuHighlightStyle.secondary(self.isHighlighted))
+                            }
                             if let hint = tokenUsage.hintLine, !hint.isEmpty {
                                 Text(hint)
                                     .font(.footnote)
@@ -702,11 +713,7 @@ extension UsageMenuCardView.Model {
         } else {
             Self.providerCostSection(provider: input.provider, cost: input.snapshot?.providerCost)
         }
-        let tokenUsage = Self.tokenUsageSection(
-            provider: input.provider,
-            enabled: input.tokenCostUsageEnabled,
-            snapshot: input.tokenSnapshot,
-            error: input.tokenError)
+        let tokenUsage = Self.tokenUsageSection(input: input)
         let subtitle = Self.subtitle(
             snapshot: input.snapshot,
             isRefreshing: input.isRefreshing,
@@ -1090,15 +1097,24 @@ extension UsageMenuCardView.Model {
         return error
     }
 
-    private static func tokenUsageSection(
-        provider: UsageProvider,
-        enabled: Bool,
-        snapshot: CostUsageTokenSnapshot?,
-        error: String?) -> TokenUsageSection?
+    private static func tokenUsageSection(input: Input) -> TokenUsageSection?
     {
-        guard provider == .codex || provider == .claude || provider == .vertexai else { return nil }
-        guard enabled else { return nil }
-        guard let snapshot else { return nil }
+        let provider = input.provider
+        guard provider == .codex || provider == .claude || provider == .gemini || provider == .vertexai else {
+            return nil
+        }
+        guard input.tokenCostUsageEnabled else { return nil }
+        let resetLines = Self.tokenResetLines(input: input)
+        guard let snapshot = input.tokenSnapshot else {
+            let err = (input.tokenError?.isEmpty ?? true) ? nil : input.tokenError
+            return TokenUsageSection(
+                sessionLine: "Today: —",
+                monthLine: "Last 30 days: —",
+                resetLines: resetLines,
+                hintLine: err == nil ? "Waiting for local usage scan…" : nil,
+                errorLine: err,
+                errorCopyText: (input.tokenError?.isEmpty ?? true) ? nil : input.tokenError)
+        }
 
         let sessionCost = snapshot.sessionCostUSD.map { UsageFormatter.usdString($0) } ?? "—"
         let sessionTokens = snapshot.sessionTokens.map { UsageFormatter.tokenCountString($0) }
@@ -1119,13 +1135,43 @@ extension UsageMenuCardView.Model {
             }
             return "Last 30 days: \(monthCost)"
         }()
-        let err = (error?.isEmpty ?? true) ? nil : error
+        let err = (input.tokenError?.isEmpty ?? true) ? nil : input.tokenError
         return TokenUsageSection(
             sessionLine: sessionLine,
             monthLine: monthLine,
+            resetLines: resetLines,
             hintLine: nil,
             errorLine: err,
-            errorCopyText: (error?.isEmpty ?? true) ? nil : error)
+            errorCopyText: (input.tokenError?.isEmpty ?? true) ? nil : input.tokenError)
+    }
+
+    private static func tokenResetLines(input: Input) -> [String] {
+        guard let snapshot = input.snapshot else { return [] }
+
+        var lines: [String] = []
+        lines.reserveCapacity(3)
+
+        if let primary = snapshot.primary,
+           let reset = Self.resetText(for: primary, style: input.resetTimeDisplayStyle, now: input.now)
+        {
+            lines.append("\(input.metadata.sessionLabel): \(reset)")
+        }
+
+        if let secondary = snapshot.secondary,
+           let reset = Self.resetText(for: secondary, style: input.resetTimeDisplayStyle, now: input.now)
+        {
+            lines.append("\(input.metadata.weeklyLabel): \(reset)")
+        }
+
+        if input.metadata.supportsOpus,
+           let tertiary = snapshot.tertiary,
+           let reset = Self.resetText(for: tertiary, style: input.resetTimeDisplayStyle, now: input.now)
+        {
+            let label = input.metadata.opusLabel ?? "Sonnet"
+            lines.append("\(label): \(reset)")
+        }
+
+        return lines
     }
 
     private static func providerCostSection(

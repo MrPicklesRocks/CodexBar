@@ -6,24 +6,28 @@ extension SettingsStore {
         guard force || !self.providerDetectionCompleted else { return }
         LoginShellPathCache.shared.captureOnce { [weak self] _ in
             Task { @MainActor in
-                await self?.applyProviderDetection()
+                await self?.applyProviderDetection(force: force)
             }
         }
     }
 
-    func applyProviderDetection() async {
-        guard !self.providerDetectionCompleted else { return }
+    func applyProviderDetection(force: Bool = false) async {
+        guard force || !self.providerDetectionCompleted else { return }
         let codexInstalled = BinaryLocator.resolveCodexBinary() != nil
         let claudeInstalled = BinaryLocator.resolveClaudeBinary() != nil
         let geminiInstalled = BinaryLocator.resolveGeminiBinary() != nil
         let antigravityRunning = await AntigravityStatusProbe.isRunning()
         let logger = CodexBarLog.logger(LogCategories.providerDetection)
+        let codexWasEnabled = self.providerEnablement[.codex] ?? false
+        let geminiWasEnabled = self.providerEnablement[.gemini] ?? false
 
         // If none installed, keep Codex enabled to match previous behavior.
+        // Also preserve previously-enabled Codex/Gemini so one failed probe
+        // cannot silently disable providers and clear historical data.
         let noneInstalled = !codexInstalled && !claudeInstalled && !geminiInstalled && !antigravityRunning
-        let enableCodex = codexInstalled || noneInstalled
+        let enableCodex = codexInstalled || noneInstalled || codexWasEnabled
         let enableClaude = claudeInstalled
-        let enableGemini = geminiInstalled
+        let enableGemini = geminiInstalled || geminiWasEnabled
         let enableAntigravity = antigravityRunning
 
         logger.info(

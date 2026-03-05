@@ -208,6 +208,143 @@ struct CostUsageScannerTests {
     }
 
     @Test
+    func claudeDailyReportEnumeratesWhenRootCacheExistsButFileIndexIsEmpty() throws {
+        let env = try CostUsageTestEnvironment()
+        defer { env.cleanup() }
+
+        let day = try env.makeLocalNoon(year: 2025, month: 12, day: 20)
+        let iso0 = env.isoString(for: day)
+
+        let assistant: [String: Any] = [
+            "type": "assistant",
+            "timestamp": iso0,
+            "message": [
+                "model": "claude-sonnet-4-20250514",
+                "usage": [
+                    "input_tokens": 200,
+                    "cache_creation_input_tokens": 50,
+                    "cache_read_input_tokens": 25,
+                    "output_tokens": 80,
+                ],
+            ],
+        ]
+        _ = try env.writeClaudeProjectFile(
+            relativePath: "project-a/session-a.jsonl",
+            contents: env.jsonl([assistant]))
+
+        let rootAttrs = try FileManager.default.attributesOfItem(atPath: env.claudeProjectsRoot.path)
+        let rootMtime = (rootAttrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        var staleCache = CostUsageCache()
+        staleCache.lastScanUnixMs = 1
+        staleCache.roots = [env.claudeProjectsRoot.path: Int64(rootMtime * 1000)]
+        staleCache.files = [:]
+        staleCache.days = [:]
+        CostUsageCacheIO.save(provider: .claude, cache: staleCache, cacheRoot: env.cacheRoot)
+
+        var options = CostUsageScanner.Options(
+            codexSessionsRoot: nil,
+            claudeProjectsRoots: [env.claudeProjectsRoot],
+            cacheRoot: env.cacheRoot)
+        options.refreshMinIntervalSeconds = 0
+
+        let report = CostUsageScanner.loadDailyReport(
+            provider: .claude,
+            since: day,
+            until: day,
+            now: day,
+            options: options)
+        #expect(report.data.count == 1)
+        #expect(report.data[0].totalTokens == 355)
+        #expect(report.data[0].modelsUsed == ["claude-sonnet-4-20250514"])
+    }
+
+    @Test
+    func geminiDailyReportParsesTokensAndModelBreakdown() throws {
+        let env = try CostUsageTestEnvironment()
+        defer { env.cleanup() }
+
+        let day = try env.makeLocalNoon(year: 2025, month: 12, day: 21)
+        let iso0 = env.isoString(for: day)
+        let iso1 = env.isoString(for: day.addingTimeInterval(1))
+        let nextDay = day.addingTimeInterval(24 * 60 * 60)
+        let iso2 = env.isoString(for: nextDay)
+
+        let payload: [String: Any] = [
+            "sessionId": "gemini-test-session",
+            "messages": [
+                [
+                    "id": "user-1",
+                    "type": "user",
+                    "timestamp": iso0,
+                    "content": "hello",
+                ],
+                [
+                    "id": "gemini-1",
+                    "type": "gemini",
+                    "timestamp": iso0,
+                    "model": "gemini-3-flash-preview",
+                    "tokens": [
+                        "input": 40,
+                        "output": 10,
+                        "total": 50,
+                    ],
+                ],
+                [
+                    "id": "gemini-2",
+                    "type": "gemini",
+                    "timestamp": iso1,
+                    "model": "gemini-3-pro-preview",
+                    "tokens": [
+                        "input": 30,
+                        "output": 20,
+                        "total": 50,
+                    ],
+                ],
+                [
+                    "id": "gemini-3",
+                    "type": "gemini",
+                    "timestamp": iso2,
+                    "model": "gemini-3-flash-preview",
+                    "tokens": [
+                        "input": 5,
+                        "output": 5,
+                        "total": 10,
+                    ],
+                ],
+            ],
+        ]
+        let fileData = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+        let fileText = String(decoding: fileData, as: UTF8.self)
+        _ = try env.writeGeminiSessionFile(
+            relativePath: "project-a/chats/session-2025-12-21T12-00-gemini.json",
+            contents: fileText)
+
+        var options = CostUsageScanner.Options(
+            codexSessionsRoot: nil,
+            claudeProjectsRoots: nil,
+            geminiRoot: env.geminiRoot,
+            cacheRoot: env.cacheRoot)
+        options.refreshMinIntervalSeconds = 0
+
+        let report = CostUsageScanner.loadDailyReport(
+            provider: .gemini,
+            since: day,
+            until: day,
+            now: day,
+            options: options)
+        #expect(report.data.count == 1)
+        #expect(report.data[0].date == "2025-12-21")
+        #expect(report.data[0].totalTokens == 100)
+        #expect(report.data[0].costUSD == nil)
+        #expect(report.data[0].modelsUsed == ["gemini-3-flash-preview", "gemini-3-pro-preview"])
+        #expect(report.data[0].modelBreakdowns?.count == 2)
+        #expect(report.data[0].modelBreakdowns?.first?.modelName == "gemini-3-flash-preview")
+        #expect(report.data[0].modelBreakdowns?.first?.totalTokens == 50)
+        #expect(report.summary?.totalTokens == 100)
+        #expect(report.summary?.totalCostUSD == nil)
+    }
+
+    @Test
     func vertexDailyReportFiltersClaudeLogs() throws {
         let env = try CostUsageTestEnvironment()
         defer { env.cleanup() }
@@ -901,6 +1038,7 @@ private struct CostUsageTestEnvironment {
     let codexSessionsRoot: URL
     let codexArchivedSessionsRoot: URL
     let claudeProjectsRoot: URL
+    let geminiRoot: URL
 
     init() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -914,10 +1052,12 @@ private struct CostUsageTestEnvironment {
         self.codexArchivedSessionsRoot = self.codexHomeRoot
             .appendingPathComponent("archived_sessions", isDirectory: true)
         self.claudeProjectsRoot = root.appendingPathComponent("claude-projects", isDirectory: true)
+        self.geminiRoot = root.appendingPathComponent("gemini-home", isDirectory: true)
         try FileManager.default.createDirectory(at: self.cacheRoot, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: self.codexSessionsRoot, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: self.codexArchivedSessionsRoot, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: self.claudeProjectsRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: self.geminiRoot, withIntermediateDirectories: true)
     }
 
     func cleanup() {
@@ -963,6 +1103,14 @@ private struct CostUsageTestEnvironment {
 
     func writeClaudeProjectFile(relativePath: String, contents: String) throws -> URL {
         let url = self.claudeProjectsRoot.appendingPathComponent(relativePath, isDirectory: false)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try contents.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    func writeGeminiSessionFile(relativePath: String, contents: String) throws -> URL {
+        let url = self.geminiRoot.appendingPathComponent("tmp", isDirectory: true)
+            .appendingPathComponent(relativePath, isDirectory: false)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try contents.write(to: url, atomically: true, encoding: .utf8)
         return url

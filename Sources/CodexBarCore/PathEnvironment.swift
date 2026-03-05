@@ -164,8 +164,17 @@ public enum BinaryLocator {
             return aliasHit
         }
 
-        // 5) Minimal fallback
-        let fallback = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+        // 5) Common install locations + minimal system fallback.
+        let userFallback = [
+            "/usr/local/bin",
+            "/opt/homebrew/bin",
+            "\(home)/.local/bin",
+            "\(home)/.bun/bin",
+            "\(home)/.npm/bin",
+            "\(home)/.yarn/bin",
+            "\(home)/.volta/bin",
+        ]
+        let fallback = userFallback + ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
         if let pathHit = self.find(name, in: fallback, fileManager: fileManager) {
             return pathHit
         }

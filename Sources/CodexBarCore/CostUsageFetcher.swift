@@ -26,7 +26,7 @@ public struct CostUsageFetcher: Sendable {
         forceRefresh: Bool = false,
         allowVertexClaudeFallback: Bool = false) async throws -> CostUsageTokenSnapshot
     {
-        guard provider == .codex || provider == .claude || provider == .vertexai else {
+        guard provider == .codex || provider == .claude || provider == .vertexai || provider == .gemini else {
             throw CostUsageError.unsupportedProvider(provider)
         }
 

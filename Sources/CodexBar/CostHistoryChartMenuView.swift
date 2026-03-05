@@ -308,8 +308,8 @@ struct CostHistoryChartMenuView: View {
 
     private func topModelsText(key: String, model: Model) -> String? {
         guard let entry = model.entriesByDateKey[key] else { return nil }
-        guard let breakdown = entry.modelBreakdowns, !breakdown.isEmpty else { return nil }
-        let parts = breakdown
+        let breakdown = entry.modelBreakdowns ?? []
+        let costParts = breakdown
             .compactMap { item -> (name: String, costUSD: Double)? in
                 guard let costUSD = item.costUSD, costUSD > 0 else { return nil }
                 return (UsageFormatter.modelDisplayName(item.modelName), costUSD)
@@ -320,7 +320,32 @@ struct CostHistoryChartMenuView: View {
             }
             .prefix(3)
             .map { "\($0.name) \(UsageFormatter.usdString($0.costUSD))" }
-        guard !parts.isEmpty else { return nil }
-        return "Top: \(parts.joined(separator: " · "))"
+        if !costParts.isEmpty {
+            return "Top: \(costParts.joined(separator: " · "))"
+        }
+
+        let tokenParts = breakdown
+            .compactMap { item -> (name: String, totalTokens: Int)? in
+                guard let totalTokens = item.totalTokens, totalTokens > 0 else { return nil }
+                return (UsageFormatter.modelDisplayName(item.modelName), totalTokens)
+            }
+            .sorted { lhs, rhs in
+                if lhs.totalTokens == rhs.totalTokens { return lhs.name < rhs.name }
+                return lhs.totalTokens > rhs.totalTokens
+            }
+            .prefix(3)
+            .map { "\($0.name) \(UsageFormatter.tokenCountString($0.totalTokens)) tokens" }
+        if !tokenParts.isEmpty {
+            return "Top: \(tokenParts.joined(separator: " · "))"
+        }
+
+        if let modelsUsed = entry.modelsUsed, !modelsUsed.isEmpty {
+            let names = modelsUsed
+                .map(UsageFormatter.modelDisplayName)
+                .sorted()
+                .prefix(3)
+            return "Models: \(names.joined(separator: " · "))"
+        }
+        return nil
     }
 }

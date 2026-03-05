@@ -30,14 +30,24 @@ public enum GeminiProviderDescriptor {
                 iconResourceName: "ProviderIcon-gemini",
                 color: ProviderColor(red: 171 / 255, green: 135 / 255, blue: 234 / 255)),
             tokenCost: ProviderTokenCostConfig(
-                supportsTokenCost: false,
-                noDataMessage: { "Gemini cost summary is not supported." }),
+                supportsTokenCost: true,
+                noDataMessage: self.noDataMessage),
             fetchPlan: ProviderFetchPlan(
                 sourceModes: [.auto, .api],
                 pipeline: ProviderFetchPipeline(resolveStrategies: { _ in [GeminiStatusFetchStrategy()] })),
             cli: ProviderCLIConfig(
                 name: "gemini",
                 versionDetector: { _ in ProviderVersionDetector.geminiVersion() }))
+    }
+
+    private static func noDataMessage() -> String {
+        let fm = FileManager.default
+        let base = ProcessInfo.processInfo.environment["GEMINI_HOME"].flatMap { raw -> String? in
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            return trimmed
+        } ?? "\(fm.homeDirectoryForCurrentUser.path)/.gemini"
+        return "No Gemini session logs found in \(base)/tmp/**/chats/session-*.json."
     }
 }
 

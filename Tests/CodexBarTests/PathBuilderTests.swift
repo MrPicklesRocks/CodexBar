@@ -81,6 +81,24 @@ struct PathBuilderTests {
     }
 
     @Test
+    func resolvesCodexFromCommonFallbackPathWhenShellLookupsFail() {
+        let fallbackPath = "/usr/local/bin/codex"
+        let fm = MockFileManager(executables: [fallbackPath])
+        let commandV: (String, String?, TimeInterval, FileManager) -> String? = { _, _, _, _ in nil }
+        let aliasResolver: (String, String?, TimeInterval, FileManager, String) -> String? = { _, _, _, _, _ in nil }
+
+        let resolved = BinaryLocator.resolveCodexBinary(
+            env: [:],
+            loginPATH: nil,
+            commandV: commandV,
+            aliasResolver: aliasResolver,
+            fileManager: fm,
+            home: "/home/test")
+
+        #expect(resolved == fallbackPath)
+    }
+
+    @Test
     func resolvesCodexFromInteractiveShell() {
         let fm = MockFileManager(executables: ["/shell/bin/codex"])
         let commandV: (String, String?, TimeInterval, FileManager) -> String? = { tool, shell, timeout, fileManager in
@@ -138,6 +156,24 @@ struct PathBuilderTests {
             fileManager: fm,
             home: "/home/test")
         #expect(resolved == "/shell/bin/gemini")
+    }
+
+    @Test
+    func resolvesGeminiFromUserFallbackPathWhenShellLookupsFail() {
+        let fallbackPath = "/home/test/.bun/bin/gemini"
+        let fm = MockFileManager(executables: [fallbackPath])
+        let commandV: (String, String?, TimeInterval, FileManager) -> String? = { _, _, _, _ in nil }
+        let aliasResolver: (String, String?, TimeInterval, FileManager, String) -> String? = { _, _, _, _, _ in nil }
+
+        let resolved = BinaryLocator.resolveGeminiBinary(
+            env: [:],
+            loginPATH: nil,
+            commandV: commandV,
+            aliasResolver: aliasResolver,
+            fileManager: fm,
+            home: "/home/test")
+
+        #expect(resolved == fallbackPath)
     }
 
     @Test

@@ -322,7 +322,7 @@ struct ProvidersPane: View {
             dashboardError = self.store.lastOpenAIDashboardError
             tokenSnapshot = self.store.tokenSnapshot(for: provider)
             tokenError = self.store.tokenError(for: provider)
-        } else if provider == .claude || provider == .vertexai {
+        } else if provider == .claude || provider == .gemini || provider == .vertexai {
             credits = nil
             creditsError = nil
             dashboard = nil

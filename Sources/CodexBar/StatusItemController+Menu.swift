@@ -1283,7 +1283,9 @@ extension StatusItemController {
     }
 
     private func makeCostHistorySubmenu(provider: UsageProvider) -> NSMenu? {
-        guard provider == .codex || provider == .claude || provider == .vertexai else { return nil }
+        guard provider == .codex || provider == .claude || provider == .gemini || provider == .vertexai else {
+            return nil
+        }
         let width = Self.menuCardBaseWidth
         guard let tokenSnapshot = self.store.tokenSnapshot(for: provider) else { return nil }
         guard !tokenSnapshot.daily.isEmpty else { return nil }
@@ -1295,6 +1297,7 @@ extension StatusItemController {
             chartItem.isEnabled = false
             chartItem.representedObject = "costHistoryChart"
             submenu.addItem(chartItem)
+            self.appendDailyModelBreakdown(to: submenu, daily: tokenSnapshot.daily)
             return submenu
         }
 
@@ -1316,7 +1319,62 @@ extension StatusItemController {
         chartItem.isEnabled = false
         chartItem.representedObject = "costHistoryChart"
         submenu.addItem(chartItem)
+        self.appendDailyModelBreakdown(to: submenu, daily: tokenSnapshot.daily)
         return submenu
+    }
+
+    private func appendDailyModelBreakdown(to submenu: NSMenu, daily: [CostUsageDailyReport.Entry]) {
+        let entries = daily
+            .filter { entry in
+                if let breakdown = entry.modelBreakdowns, !breakdown.isEmpty { return true }
+                if let models = entry.modelsUsed, !models.isEmpty { return true }
+                return false
+            }
+            .sorted { $0.date > $1.date }
+        guard !entries.isEmpty else { return }
+
+        submenu.addItem(.separator())
+        let header = NSMenuItem(title: "Daily model usage", action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        submenu.addItem(header)
+
+        for entry in entries {
+            let day = NSMenuItem(title: entry.date, action: nil, keyEquivalent: "")
+            day.isEnabled = false
+            submenu.addItem(day)
+
+            if let breakdown = entry.modelBreakdowns, !breakdown.isEmpty {
+                let parts = breakdown
+                    .sorted { lhs, rhs in
+                        let lTokens = lhs.totalTokens ?? 0
+                        let rTokens = rhs.totalTokens ?? 0
+                        if lTokens != rTokens { return lTokens > rTokens }
+                        let lCost = lhs.costUSD ?? 0
+                        let rCost = rhs.costUSD ?? 0
+                        if lCost != rCost { return lCost > rCost }
+                        return lhs.modelName < rhs.modelName
+                    }
+                    .map { breakdown -> String in
+                        let name = UsageFormatter.modelDisplayName(breakdown.modelName)
+                        if let tokens = breakdown.totalTokens {
+                            return "\(name): \(UsageFormatter.tokenCountString(tokens)) tokens"
+                        }
+                        if let cost = breakdown.costUSD {
+                            return "\(name): \(UsageFormatter.usdString(cost))"
+                        }
+                        return name
+                    }
+                for part in parts {
+                    submenu.addItem(NSMenuItem(title: "  \(part)", action: nil, keyEquivalent: ""))
+                }
+            } else if let modelsUsed = entry.modelsUsed, !modelsUsed.isEmpty {
+                let names = modelsUsed
+                    .map(UsageFormatter.modelDisplayName)
+                    .sorted()
+                    .joined(separator: ", ")
+                submenu.addItem(NSMenuItem(title: "  \(names)", action: nil, keyEquivalent: ""))
+            }
+        }
     }
 
     private func isHostedSubviewMenu(_ menu: NSMenu) -> Bool {
@@ -1377,7 +1435,7 @@ extension StatusItemController {
             dashboardError = self.store.lastOpenAIDashboardError
             tokenSnapshot = self.store.tokenSnapshot(for: target)
             tokenError = self.store.tokenError(for: target)
-        } else if target == .claude || target == .vertexai, snapshotOverride == nil {
+        } else if target == .claude || target == .gemini || target == .vertexai, snapshotOverride == nil {
             credits = nil
             creditsError = nil
             dashboard = nil

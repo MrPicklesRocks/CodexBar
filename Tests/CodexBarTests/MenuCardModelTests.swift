@@ -286,6 +286,55 @@ struct MenuCardModelTests {
     }
 
     @Test
+    func claudeCostSectionIncludesResetLines() throws {
+        let now = Date()
+        let metadata = try #require(ProviderDefaults.metadata[.claude])
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(
+                usedPercent: 10,
+                windowMinutes: nil,
+                resetsAt: now.addingTimeInterval(60 * 60),
+                resetDescription: nil),
+            secondary: RateWindow(
+                usedPercent: 25,
+                windowMinutes: nil,
+                resetsAt: now.addingTimeInterval(3 * 24 * 60 * 60),
+                resetDescription: nil),
+            tertiary: nil,
+            updatedAt: now)
+        let tokenSnapshot = CostUsageTokenSnapshot(
+            sessionTokens: 123,
+            sessionCostUSD: 1.23,
+            last30DaysTokens: 456,
+            last30DaysCostUSD: 78.9,
+            daily: [],
+            updatedAt: now)
+        let model = UsageMenuCardView.Model.make(.init(
+            provider: .claude,
+            metadata: metadata,
+            snapshot: snapshot,
+            credits: nil,
+            creditsError: nil,
+            dashboard: nil,
+            dashboardError: nil,
+            tokenSnapshot: tokenSnapshot,
+            tokenError: nil,
+            account: AccountInfo(email: nil, plan: nil),
+            isRefreshing: false,
+            lastError: nil,
+            usageBarsShowUsed: false,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: true,
+            showOptionalCreditsAndExtraUsage: true,
+            hidePersonalInfo: false,
+            now: now))
+
+        let resetLines = model.tokenUsage?.resetLines ?? []
+        #expect(resetLines.count == 2)
+        #expect(resetLines.allSatisfy { $0.contains("Resets") })
+    }
+
+    @Test
     func claudeModelDoesNotLeakCodexPlan() throws {
         let metadata = try #require(ProviderDefaults.metadata[.claude])
         let model = UsageMenuCardView.Model.make(.init(

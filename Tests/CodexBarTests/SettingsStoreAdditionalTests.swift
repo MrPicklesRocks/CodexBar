@@ -81,9 +81,28 @@ struct SettingsStoreAdditionalTests {
         #expect(SettingsStore.hasAnyTokenCostUsageSources(env: env, fileManager: fm))
     }
 
-    private static func makeSettingsStore(suite: String) -> SettingsStore {
+    @Test
+    func providerDetectionForceBypassesCompletedGuard() async {
+        let settings = Self.makeSettingsStore(
+            suite: "SettingsStoreAdditionalTests-provider-detection-force",
+            providerDetectionCompleted: true)
+
+        let revisionBefore = settings.configRevision
+        await settings.applyProviderDetection(force: false)
+        #expect(settings.configRevision == revisionBefore)
+
+        await settings.applyProviderDetection(force: true)
+        #expect(settings.configRevision > revisionBefore)
+        #expect(settings.providerDetectionCompleted)
+    }
+
+    private static func makeSettingsStore(
+        suite: String,
+        providerDetectionCompleted: Bool = false) -> SettingsStore
+    {
         let defaults = UserDefaults(suiteName: suite)!
         defaults.removePersistentDomain(forName: suite)
+        defaults.set(providerDetectionCompleted, forKey: "providerDetectionCompleted")
         let configStore = testConfigStore(suiteName: suite)
 
         return SettingsStore(

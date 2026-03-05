@@ -3,7 +3,7 @@ import Commander
 import Foundation
 
 extension CodexBarCLI {
-    private static let costSupportedProviders: Set<UsageProvider> = [.claude, .codex]
+    private static let costSupportedProviders: Set<UsageProvider> = [.claude, .codex, .gemini]
 
     static func runCost(_ values: ParsedValues) async {
         let output = CLIOutputPreferences.from(values: values)
@@ -23,7 +23,7 @@ extension CodexBarCLI {
         guard !providers.isEmpty else {
             Self.exit(
                 code: .failure,
-                message: "Error: cost is only supported for Claude and Codex.",
+                message: "Error: cost is only supported for Claude, Codex, and Gemini.",
                 output: output,
                 kind: .args)
         }
@@ -117,7 +117,10 @@ extension CodexBarCLI {
                 costUSD: entry.costUSD,
                 modelsUsed: entry.modelsUsed,
                 modelBreakdowns: entry.modelBreakdowns?.map { breakdown in
-                    CostModelBreakdownPayload(modelName: breakdown.modelName, costUSD: breakdown.costUSD)
+                    CostModelBreakdownPayload(
+                        modelName: breakdown.modelName,
+                        costUSD: breakdown.costUSD,
+                        totalTokens: breakdown.totalTokens)
                 })
         } ?? []
 
@@ -272,10 +275,12 @@ struct CostDailyEntryPayload: Encodable {
 struct CostModelBreakdownPayload: Encodable {
     let modelName: String
     let costUSD: Double?
+    let totalTokens: Int?
 
     private enum CodingKeys: String, CodingKey {
         case modelName
         case costUSD = "cost"
+        case totalTokens
     }
 }
 

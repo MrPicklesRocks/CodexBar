@@ -49,6 +49,7 @@ struct GeneralPane: View {
 
                                 self.costStatusLine(provider: .claude)
                                 self.costStatusLine(provider: .codex)
+                                self.costStatusLine(provider: .gemini)
                             }
                         }
                     }
@@ -118,7 +119,7 @@ struct GeneralPane: View {
     private func costStatusLine(provider: UsageProvider) -> some View {
         let name = ProviderDescriptorRegistry.descriptor(for: provider).metadata.displayName
 
-        guard provider == .claude || provider == .codex else {
+        guard provider == .claude || provider == .codex || provider == .gemini else {
             return Text("\(name): unsupported")
                 .font(.footnote)
                 .foregroundStyle(.tertiary)
@@ -140,7 +141,13 @@ struct GeneralPane: View {
         if let snapshot = self.store.tokenSnapshot(for: provider) {
             let updated = UsageFormatter.updatedString(from: snapshot.updatedAt)
             let cost = snapshot.last30DaysCostUSD.map { UsageFormatter.usdString($0) } ?? "—"
-            return Text("\(name): \(updated) · 30d \(cost)")
+            let resetSummary = self.costResetSummary(provider: provider)
+            let line = if let resetSummary, !resetSummary.isEmpty {
+                "\(name): \(updated) · 30d \(cost) · \(resetSummary)"
+            } else {
+                "\(name): \(updated) · 30d \(cost)"
+            }
+            return Text(line)
                 .font(.footnote)
                 .foregroundStyle(.tertiary)
         }
@@ -161,5 +168,24 @@ struct GeneralPane: View {
         return Text("\(name): no data yet")
             .font(.footnote)
             .foregroundStyle(.tertiary)
+    }
+
+    private func costResetSummary(provider: UsageProvider) -> String? {
+        guard let usage = self.store.snapshot(for: provider) else { return nil }
+
+        var parts: [String] = []
+        if let primary = usage.primary,
+           let reset = UsageFormatter.resetLine(for: primary, style: self.settings.resetTimeDisplayStyle)
+        {
+            parts.append("session \(reset)")
+        }
+        if let secondary = usage.secondary,
+           let reset = UsageFormatter.resetLine(for: secondary, style: self.settings.resetTimeDisplayStyle)
+        {
+            parts.append("weekly \(reset)")
+        }
+
+        guard !parts.isEmpty else { return nil }
+        return parts.joined(separator: " · ")
     }
 }

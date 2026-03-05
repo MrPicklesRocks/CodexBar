@@ -362,34 +362,6 @@ extension CostUsageScanner {
         let rootAttrs = (try? FileManager.default.attributesOfItem(atPath: canonicalRootPath)) ?? [:]
         let rootMtime = (rootAttrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
         let rootMtimeMs = Int64(rootMtime * 1000)
-        let cachedRootMtime = rootCandidates.compactMap { state.rootCache[$0] }.first
-        let canSkipEnumeration = cachedRootMtime == rootMtimeMs && rootMtimeMs > 0
-
-        if canSkipEnumeration {
-            let cachedPaths = state.cache.files.keys.filter { path in
-                prefixes.contains(where: { path.hasPrefix($0) })
-            }
-            for path in cachedPaths {
-                guard FileManager.default.fileExists(atPath: path) else {
-                    if let old = state.cache.files[path] {
-                        Self.applyFileDays(cache: &state.cache, fileDays: old.days, sign: -1)
-                    }
-                    state.cache.files.removeValue(forKey: path)
-                    continue
-                }
-                let attrs = (try? FileManager.default.attributesOfItem(atPath: path)) ?? [:]
-                let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
-                if size <= 0 { continue }
-                let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-                let mtimeMs = Int64(mtime * 1000)
-                Self.processClaudeFile(
-                    url: URL(fileURLWithPath: path),
-                    size: size,
-                    mtimeMs: mtimeMs,
-                    state: state)
-            }
-            return
-        }
 
         let keys: [URLResourceKey] = [
             .isRegularFileKey,

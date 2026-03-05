@@ -774,6 +774,7 @@ public struct TTYCommandRunner {
     public static func which(_ tool: String) -> String? {
         if tool == "codex", let located = BinaryLocator.resolveCodexBinary() { return located }
         if tool == "claude", let located = BinaryLocator.resolveClaudeBinary() { return located }
+        if tool == "gemini", let located = BinaryLocator.resolveGeminiBinary() { return located }
         return self.runWhich(tool)
     }
 

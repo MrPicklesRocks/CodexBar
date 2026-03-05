@@ -762,6 +762,7 @@ struct StatusMenuTests {
         let ids = menu.items.compactMap { $0.representedObject as? String }
         #expect(ids.contains("menuCardCost"))
     }
+
 }
 
 extension StatusMenuTests {
